@@ -42,7 +42,8 @@
 
 mod accounts_struct;
 mod campaign; // Campaign data structure
-mod errors; // Custom error codes // Account validation structs
+mod contribution; // Contribution tracking for donors
+mod errors; // Custom error codes
 
 // ============================================================================
 // IMPORTS
@@ -59,7 +60,8 @@ use anchor_lang::system_program::{transfer, Transfer};
 use crate::errors::CampaignError;
 
 // Import our data structures
-use crate::campaign::Campaign;
+// use crate::campaign::Campaign;
+// use crate::contribution::Contribution;
 
 // Import our account validation structs from accounts.rs
 use crate::accounts_struct::*;
@@ -93,15 +95,18 @@ pub mod mancer_submission {
     /// 2. Validate deadline is in the future
     /// 3. Initialize campaign with creator, goal, deadline, raised=0, claimed=false
     ///
+    /// # Note on Vault
+    /// The vault PDA is created automatically on first contribution.
+    /// This saves compute units during campaign creation.
+    ///
     /// # Accounts (via Context<CreateCampaign>)
-    /// - campaign: New account to store campaign data (created by this instruction)
-    /// - vault: PDA that will hold funds (derived, not created here)
+    /// - campaign: New PDA account to store campaign data
     /// - creator: Must sign and pays for account creation
     /// - system_program: Required for account operations
     pub fn create_campaign(
-        ctx: Context<CreateCampaign>, // Contains all validated accounts
-        goal: u64,                    // Target amount in lamports
-        deadline: i64,                // Unix timestamp
+        ctx: Context<CreateCampaign>,
+        goal: u64,     // Target amount in lamports
+        deadline: i64, // Unix timestamp
     ) -> Result<()> {
         // Get current time from Solana's Clock sysvar
         // Clock is a special account that always has the current time
@@ -136,30 +141,46 @@ pub mod mancer_submission {
     ///
     /// # Flow
     /// 1. Validate amount > 0
-    /// 2. Update campaign.raised += amount
-    /// 3. Transfer SOL from donor to vault PDA
+    /// 2. Create or update Contribution PDA (using init_if_needed)
+    /// 3. Update campaign.raised += amount (with overflow protection)
+    /// 4. Transfer SOL from donor to vault PDA
     ///
-    /// # Accounts (via Context<Contribute>)
-    /// - vault: PDA receiving the funds (derived from campaign key)
-    /// - campaign: Campaign to contribute to (mut - updating raised amount)
-    /// - donor: Must sign to authorize transfer from their wallet
-    /// - system_program: Required for the transfer
-    pub fn contribute(
-        ctx: Context<Contribute>, // Contains vault, campaign, donor, system_program
-        amount: u64,              // Amount in lamports
-    ) -> Result<()> {
+    /// # Security
+    /// - Contribution PDA tracks donor's total contribution
+    /// - Seeds [b"contribution", campaign, donor] ensure only donor can modify
+    /// - Prevents refund abuse by non-contributors
+    pub fn contribute(ctx: Context<Contribute>, amount: u64) -> Result<()> {
         // Validation: Amount must be positive
         if amount == 0 {
             return Err(CampaignError::InvalidAmount.into());
         }
 
-        // Update the campaign's raised amount
+        // Update the campaign's raised amount (with overflow protection)
         let campaign = &mut ctx.accounts.campaign;
-        campaign.raised += amount;
+        campaign.raised = campaign
+            .raised
+            .checked_add(amount)
+            .ok_or(CampaignError::AmountOverflow)?;
+
+        // Update or initialize the contribution tracking
+        let contribution = &mut ctx.accounts.contribution;
+
+        // Check if this is a new contribution (data is empty/zero)
+        // If contribution.campaign is Pubkey::default(), it's a new account
+        if contribution.campaign == Pubkey::default() {
+            // First contribution - initialize the account
+            contribution.campaign = campaign.key();
+            contribution.donor = ctx.accounts.donor.key();
+            contribution.amount = amount;
+        } else {
+            // Subsequent contribution - add to existing amount
+            contribution.amount = contribution
+                .amount
+                .checked_add(amount)
+                .ok_or(CampaignError::AmountOverflow)?;
+        }
 
         // Transfer SOL from donor to the vault PDA
-        // This is a CPI (Cross-Program Invocation) to the System program
-        // We call system_program::transfer to move SOL
         transfer(
             CpiContext::new(
                 ctx.accounts.system_program.to_account_info(),
@@ -172,9 +193,10 @@ pub mod mancer_submission {
         )?;
 
         msg!(
-            "Contributed: {} lamports, total raised={}",
+            "Contributed: {} lamports, total raised={}, your total={}",
             amount,
-            campaign.raised
+            campaign.raised,
+            contribution.amount
         );
         Ok(())
     }
@@ -253,25 +275,23 @@ pub mod mancer_submission {
 
     /// Get a refund if campaign failed (goal not met after deadline)
     ///
-    /// # Conditions (ALL must be true)
-    /// - Current time >= deadline (deadline passed)
-    /// - Campaign raised < goal (goal NOT reached - campaign failed)
-    /// - Donor specifies amount to refund
+    /// # Security - CRITICAL
+    /// This function now validates donor contributions to prevent vault theft:
+    /// - Only donors with a valid Contribution PDA can refund
+    /// - Refund amount cannot exceed donor's remaining contribution
+    /// - Contribution amount is decremented after each refund
     ///
     /// # Flow
     /// 1. Get current time
     /// 2. Validate deadline passed
     /// 3. Validate goal NOT reached (campaign failed)
-    /// 4. Validate amount > 0
-    /// 5. Transfer amount from vault to donor
-    ///
-    /// # Accounts (via Context<Refund>)
-    /// - vault: PDA holding funds (transfer OUT from here)
-    /// - campaign: Read-only, needed to check deadline and goal
-    /// - donor: Receives refund and must sign
-    /// - system_program: Required for transfer
+    /// 4. Verify donor has contribution record (via account constraint)
+    /// 5. Validate refund amount <= donor's contribution
+    /// 6. Transfer amount from vault to donor
+    /// 7. Decrement contribution amount
     pub fn refund(ctx: Context<Refund>, amount: u64) -> Result<()> {
         let campaign = &ctx.accounts.campaign;
+        let contribution = &mut ctx.accounts.contribution;
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
 
@@ -288,6 +308,16 @@ pub mod mancer_submission {
         // Validation 3: Amount must be positive
         if amount == 0 {
             return Err(CampaignError::InvalidAmount.into());
+        }
+
+        // Validation 4: Amount cannot exceed remaining contribution
+        if amount > contribution.amount {
+            return Err(CampaignError::InsufficientContribution.into());
+        }
+
+        // Validation 5: Must have remaining contribution to refund
+        if contribution.amount == 0 {
+            return Err(CampaignError::NoContributionToRefund.into());
         }
 
         // Prepare seeds for PDA signing
@@ -307,7 +337,17 @@ pub mod mancer_submission {
             amount,
         )?;
 
-        msg!("Refunded: {} lamports", amount);
+        // Decrement contribution amount to prevent double-refund
+        contribution.amount = contribution
+            .amount
+            .checked_sub(amount)
+            .ok_or(CampaignError::AmountOverflow)?;
+
+        msg!(
+            "Refunded: {} lamports, remaining contribution={}",
+            amount,
+            contribution.amount
+        );
         Ok(())
     }
 }

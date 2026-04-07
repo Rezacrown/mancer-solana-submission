@@ -48,4 +48,28 @@ pub enum CampaignError {
     /// Fix: Provide a positive amount
     #[msg("Invalid amount - must be greater than 0")]
     InvalidAmount,
+
+    /// Error: Arithmetic overflow when adding to raised amount
+    ///
+    /// Fix: This shouldn't happen normally - campaign has reasonable limits
+    #[msg("Arithmetic overflow occurred")]
+    AmountOverflow,
+
+    /// Error: Caller trying to refund has no contribution record
+    ///
+    /// Fix: Only donors who contributed can request refunds
+    #[msg("No contribution found for this donor")]
+    NotADonor,
+
+    /// Error: Refund amount exceeds donor's remaining contribution
+    ///
+    /// Fix: Specify an amount <= your remaining contribution
+    #[msg("Refund amount exceeds your contribution")]
+    InsufficientContribution,
+
+    /// Error: Contribution has already been fully refunded
+    ///
+    /// Fix: You have no remaining contribution to refund
+    #[msg("No remaining contribution to refund")]
+    NoContributionToRefund,
 }
