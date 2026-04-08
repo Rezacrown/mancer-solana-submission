@@ -212,7 +212,6 @@ pub struct Refund<'info> {
         seeds = [b"contribution", campaign.key().as_ref(), donor.key().as_ref()],
         bump,
         has_one = donor @CampaignError::NotADonor,
-        close = donor
     )]
     pub contribution: Account<'info, Contribution>,
 
