@@ -70,8 +70,6 @@ use crate::accounts_struct::*;
 // PROGRAM ID
 // ============================================================================
 
-/// The program ID - this MUST match what's in Anchor.toml
-/// This identifies this specific program on Solana
 declare_id!("2bvT3M5bLbJgk8dcm3jsDkSEn8B2ntk2Eokmt2UKb7pU");
 
 // ============================================================================
@@ -120,6 +118,7 @@ pub mod mancer_submission {
 
         // Initialize campaign data
         let campaign = &mut ctx.accounts.campaign;
+
         campaign.creator = ctx.accounts.creator.key(); // Store creator's public key
         campaign.goal = goal; // Set target amount
         campaign.raised = 0; // Start with 0 raised
@@ -155,8 +154,19 @@ pub mod mancer_submission {
             return Err(CampaignError::InvalidAmount.into());
         }
 
-        // Update the campaign's raised amount (with overflow protection)
+        // get campaign
         let campaign = &mut ctx.accounts.campaign;
+
+        // Get current time from Clock sysvar
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+
+        // Validation: Campaign deadline must not have passed
+        if current_time >= campaign.deadline {
+            return Err(CampaignError::DeadlinePassed.into());
+        }
+
+        // Update the campaign's raised amount (with overflow protection)
         campaign.raised = campaign
             .raised
             .checked_add(amount)

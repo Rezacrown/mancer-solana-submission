@@ -9,6 +9,9 @@ skip-lint = false
 [programs.localnet]
 mancer_submission = "2bvT3M5bLbJgk8dcm3jsDkSEn8B2ntk2Eokmt2UKb7pU"
 
+[programs.devnet]
+mancer_submission = "2bvT3M5bLbJgk8dcm3jsDkSEn8B2ntk2Eokmt2UKb7pU"
+
 [registry]
 url = "https://api.apr.dev"
 

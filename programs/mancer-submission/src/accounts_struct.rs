@@ -157,7 +157,7 @@ pub struct Withdraw<'info> {
         mut,
         seeds = [b"campaign", creator.key().as_ref()],
         bump,
-        has_one = creator
+        has_one = creator,
     )]
     pub campaign: Account<'info, Campaign>,
 
@@ -211,7 +211,8 @@ pub struct Refund<'info> {
         mut,
         seeds = [b"contribution", campaign.key().as_ref(), donor.key().as_ref()],
         bump,
-        has_one = donor @CampaignError::NotADonor
+        has_one = donor @CampaignError::NotADonor,
+        close = donor
     )]
     pub contribution: Account<'info, Contribution>,
 

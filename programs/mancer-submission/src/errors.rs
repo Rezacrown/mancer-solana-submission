@@ -72,4 +72,8 @@ pub enum CampaignError {
     /// Fix: You have no remaining contribution to refund
     #[msg("No remaining contribution to refund")]
     NoContributionToRefund,
+
+    // Error: Campign Deadline gas Already close
+    #[msg("Campaign deadline has passed - contributions closed")]
+    DeadlinePassed,
 }
